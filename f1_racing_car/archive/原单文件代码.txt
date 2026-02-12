@@ -1,0 +1,1089 @@
+/*
+	F1 Racing Car - F1 赛车
+*/
+#include <stdio.h>
+#include <SDL2/SDL.h>        // sudo apt install libsdl2-dev -y
+#include <SDL2/SDL_image.h>  // sudo apt install libsdl2-image-dev -y
+#include <SDL2/SDL_mixer.h>  // sudo apt install libsdl2-mixer-dev -y
+#include <math.h>
+#include <unistd.h>
+#include <stdlib.h>
+
+#define WINDOW_W 500  // 设置窗口宽度
+#define WINDOW_H 800  // 设置窗口高度
+
+#define CAR_WIDTH 70    // 赛车宽
+#define CAR_HEIGHT 130  // 赛车高
+
+#define MAPS_COUNT 5  // 地图数量
+#define CARS_COUNT 9  // 赛车数量
+
+#define ENEMY_CARS_COUNT 9  // 敌方车辆种类数量
+#define MAX_ENEMIES 5       // 敌方车辆数量
+
+#define LIVES 5;  // 生命值
+
+// 过场动画状态
+typedef enum
+{
+	TRANSITION_NONE,
+	TRANSITION_FADE_OUT,
+	TRANSITION_FADE_IN
+} TransitionState;
+
+// 过场动画结构体
+typedef struct
+{
+	TransitionState state;
+	float alpha;        // 透明度 0.0-1.0
+	float speed;        // 过渡速度
+	int duration;       // 持续时间（帧）
+	int timer;          // 计时器
+	SDL_Texture *transition_texture; // 过场纹理
+} Transition;
+
+// 敌方车辆结构体
+typedef struct
+{
+	int x;           // x坐标
+	float y;         // y坐标（使用浮点数实现平滑移动）
+	int width;       // 宽度
+	int height;      // 高度
+	float speed;     // 速度
+	int active;      // 是否运动
+	int type;        // 车辆类型
+	SDL_Texture *texture; // 纹理
+} EnemyCar;
+
+// 加载过场图片
+SDL_Texture *load_transition_texture(SDL_Renderer *renderer, const char *path)
+{
+	SDL_Surface *surface = IMG_Load(path);
+	if (!surface)
+	{
+		printf("无法加载过场图片: %s\n", IMG_GetError());
+		return NULL;
+	}
+
+	SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, surface);
+	SDL_FreeSurface(surface);
+
+	if (!texture)
+	{
+		printf("无法创建过场纹理: %s\n", SDL_GetError());
+	}
+
+	return texture;
+}
+
+// 初始化过场动画
+void init_transition(Transition *transition, SDL_Renderer *renderer)
+{
+	transition->state = TRANSITION_NONE;
+	transition->alpha = 0.0f;
+	transition->speed = 0.02f;  // 减慢过渡速度，让动画更平滑
+	transition->duration = 500;  // 增加持续时间到80帧（约1.3秒）
+	transition->timer = 0;
+
+	// 加载过场图片（使用默认图片，你可以替换为实际路径）
+	const char *transition_path = "assets/maps/map4_page.png";
+	transition->transition_texture = load_transition_texture(renderer, transition_path);
+
+	// 如果加载失败，创建一个纯色纹理作为备用
+	if (!transition->transition_texture)
+	{
+		// 创建白色纹理作为备用
+		SDL_Surface *surface = SDL_CreateRGBSurface(0, WINDOW_W, WINDOW_H, 32,
+													0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000);
+		if (surface)
+		{
+			SDL_FillRect(surface, NULL, SDL_MapRGBA(surface->format, 255, 255, 255, 255));
+			transition->transition_texture = SDL_CreateTextureFromSurface(renderer, surface);
+			SDL_FreeSurface(surface);
+		}
+	}
+}
+
+// 开始过场动画
+void start_transition(Transition *transition)
+{
+	transition->state = TRANSITION_FADE_OUT;
+	transition->alpha = 0.0f;
+	transition->timer = 0;
+}
+
+// 更新过场动画
+int update_transition(Transition *transition)
+{
+	if (transition->state == TRANSITION_NONE)
+	{
+		return 0;
+	}
+
+	transition->timer++;
+
+	switch (transition->state)
+	{
+		case TRANSITION_FADE_OUT:
+			transition->alpha += transition->speed;
+			if (transition->alpha >= 1.0f)
+			{
+				transition->alpha = 1.0f;
+				transition->state = TRANSITION_FADE_IN;
+				transition->timer = 0;
+			}
+			break;
+
+		case TRANSITION_FADE_IN:
+			transition->alpha -= transition->speed;
+			if (transition->alpha <= 0.0f)
+			{
+				transition->alpha = 0.0f;
+				transition->state = TRANSITION_NONE;
+				transition->timer = 0;
+				return 1; // 动画结束
+			}
+			break;
+
+		default:
+			break;
+	}
+
+	return 0;
+}
+
+// 渲染过场动画
+void render_transition(SDL_Renderer *renderer, Transition *transition)
+{
+	if (transition->state == TRANSITION_NONE || transition->alpha <= 0.0f)
+	{
+		return;
+	}
+
+	if (transition->transition_texture)
+	{
+		// 设置透明度
+		SDL_SetTextureAlphaMod(transition->transition_texture, (Uint8)(transition->alpha * 255));
+
+		// 渲染整个屏幕
+		SDL_Rect dest = { 0, 0, WINDOW_W, WINDOW_H };
+		SDL_RenderCopy(renderer, transition->transition_texture, NULL, &dest);
+
+		// 重置纹理透明度
+		SDL_SetTextureAlphaMod(transition->transition_texture, 255);
+	}
+	else
+	{
+		// 如果没有纹理，使用纯色遮罩
+		SDL_SetRenderDrawColor(renderer, 255, 255, 255, (Uint8)(transition->alpha * 255));
+		SDL_Rect fullScreen = { 0, 0, WINDOW_W, WINDOW_H };
+		SDL_RenderFillRect(renderer, &fullScreen);
+	}
+}
+
+// 根据分数计算速度倍率
+float get_speed_multiplier(int score)
+{
+	// 基础速度为1.0
+	// 每100分增加0.2倍速度，最大不超过3.0倍
+	float multiplier = 1.0f + (score / 100) * 0.2f;
+	if (multiplier > 3.0f)
+	{
+		multiplier = 3.0f;
+	}
+	return multiplier;
+}
+
+int main(void)
+{
+	srand(getpid());  // 设置随机种子
+
+	// 初始化 SDL 视频子系统
+	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0)
+	{
+		printf("SDL_Init() failed: %s\n", SDL_GetError());
+		return -1;
+	}
+
+	// 初始化 SDL_mixer 音频库
+	// 44100 CD音质, 数值越高，音质越好, 但 CPU 占用越高
+	// 2  声道数, 双声道, 立体声 ( 1单声道  4环绕声) 
+	// 2048 块大小, 每次从音频缓冲区读取多少字节, 影响延迟和稳定性
+	if (Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 2, 2048) < 0)
+	{
+		printf("Mix_OpenAudio() failed: %s\n", Mix_GetError());
+		SDL_Quit();
+		return -2;
+	}
+
+	// 初始化 SDL_image 库，支持 PNG 格式
+	if (IMG_Init(IMG_INIT_PNG) == 0)
+	{
+		printf("IMG_Init() failed: %s\n", IMG_GetError());
+		Mix_CloseAudio();
+		SDL_Quit();
+		return -3;
+	}
+
+	// 加载背景音乐
+	Mix_Music *bgm = Mix_LoadMUS("assets/bgm/Insomnia - Craig David.mp3");
+	if (!bgm)
+	{
+		printf("无法加载背景音乐: %s\n", Mix_GetError());
+		// 继续运行，没有音乐也可以玩
+	}
+
+	// 游戏音乐库
+	const char *bgms[] = {
+		"assets/bgm/Insomnia - Craig David.mp3",
+		"assets/bgm/Lady Gaga - Poker Face.mp3",
+		"assets/bgm/right now-akon.mp3",
+		"assets/bgm/本兮,阿悄 - 无限速.mp3",
+		"assets/bgm/死一样痛过(MC梦版)-MC몽.mp3"
+	};
+	int bgm_total = sizeof(bgms) / sizeof(bgms[0]);  // bgm 数量
+	int current_bgm = 0;
+
+	// 地图
+	const char *maps[] = {
+		"assets/maps/map1.png",
+		"assets/maps/map2.png",
+		"assets/maps/map3.png",
+		"assets/maps/map4.png",
+		"assets/maps/map5.png",
+	};
+	int map_total = sizeof(maps) / sizeof(maps[0]);
+	int current_map = 0;
+	SDL_Texture *map_textures[MAPS_COUNT] = { NULL };  // 初始化所有地图纹理
+	int map_heights[MAPS_COUNT] = { 0 };  // 初始化所有地图的高度
+
+	// 过场图片路径（为每个地图添加过场动画）
+	const char *transitions[] = {
+		"assets/maps/map1_page.png",
+		"assets/maps/map2_page.png",
+		"assets/maps/map3_page.png",
+		"assets/maps/map4_page.png",
+		"assets/maps/map5_page.png",
+	};
+
+	// 创建窗口
+	SDL_Window *window = SDL_CreateWindow(
+		"F1 Racing Car",  // 窗口标题
+		SDL_WINDOWPOS_CENTERED,  // 窗口初始 x 坐标 ( 居中 )
+		SDL_WINDOWPOS_CENTERED,  // 窗口初始 y 坐标 ( 居中 )
+		WINDOW_W,  // 窗口宽度
+		WINDOW_H,  // 窗口高度
+		SDL_WINDOW_SHOWN  // 窗口标志, 创建后立即显示
+	);
+
+	if (!window)  // 判断窗口是否创建成功
+	{
+		printf("SDL_CreateWindow() failed: %s\n", SDL_GetError());
+		if (bgm) Mix_FreeMusic(bgm);
+		Mix_CloseAudio();
+		IMG_Quit();
+		SDL_Quit();  // 释放所有 SDL 分配的资源
+		return -4;
+	}
+
+	// 创建渲染器
+	SDL_Renderer *renderer = SDL_CreateRenderer(
+		window,
+		-1,
+		SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC
+	);
+	if (!renderer)
+	{
+		printf("SDL_CreateRenderer() failed: %s\n", SDL_GetError());
+		if (bgm) Mix_FreeMusic(bgm);
+		SDL_DestroyWindow(window);
+		Mix_CloseAudio();
+		IMG_Quit();
+		SDL_Quit();
+		return -5;
+	}
+
+	// 加载地图纹理
+	for (int i = 0; i < map_total; i++)
+	{
+		SDL_Surface *map_surface = IMG_Load(maps[i]);
+		if (map_surface)
+		{
+			map_textures[i] = SDL_CreateTextureFromSurface(renderer, map_surface);
+			if (map_textures[i])
+			{
+				int tex_width, tex_height;
+				SDL_QueryTexture(map_textures[i], NULL, NULL, &tex_width, &tex_height);
+				map_heights[i] = tex_height;
+				printf("加载地图 %d: %s (%d x %d)\n", i + 1, maps[i], tex_width, tex_height);
+			}
+			SDL_FreeSurface(map_surface);
+		}
+	}
+
+	// 设置当前地图纹理
+	SDL_Texture *current_map_texture = map_textures[current_map];
+	int current_map_height = map_heights[current_map];
+
+	// 赛车皮肤
+	const char *cars[] = {
+		"assets/cars/red_up.png",
+		"assets/cars/black_up.png",
+		"assets/cars/bumblebee_up.png",
+		"assets/cars/taxi_up.png",
+		"assets/cars/tractor_up.png",
+		"assets/cars/grey_up.png",
+		"assets/cars/white_up.png",
+		"assets/cars/motorcycle_up.png",
+		"assets/cars/optimus_prime_up.png"
+	};
+	int car_total = sizeof(cars) / sizeof(cars[0]);
+	int current_car = 0;
+	SDL_Texture *car_textures[CARS_COUNT] = { NULL };
+
+	// 加载赛车皮肤纹理
+	for (int i = 0; i < car_total; i++)
+	{
+		SDL_Surface *car_surface = IMG_Load(cars[i]);
+		if (car_surface)
+		{
+			car_textures[i] = SDL_CreateTextureFromSurface(renderer, car_surface);
+			if (car_textures[i])
+			{
+				printf("加载汽车皮肤 %d: %s\n", i + 1, cars[i]);
+			}
+			SDL_FreeSurface(car_surface);
+		}
+	}
+
+	// 设置当前赛车皮肤
+	SDL_Texture *current_car_texture = car_textures[current_car];
+
+	/* ---------------------------- 敌方赛车 ----------------------------  */
+	const char *enemy_cars[] = {
+		"assets/cars/red_down.png",
+		"assets/cars/black_down.png",
+		"assets/cars/bumblebee_down.png",
+		"assets/cars/taxi_down.png",
+		"assets/cars/tractor_down.png",
+		"assets/cars/grey_down.png",
+		"assets/cars/white_down.png",
+		"assets/cars/motorcycle_down.png",
+		"assets/cars/optimus_prime_down.png"
+	};
+
+	SDL_Texture *enemy_textures[ENEMY_CARS_COUNT] = { NULL };
+
+	// 加载敌方车辆纹理
+	for (int i = 0; i < ENEMY_CARS_COUNT; i++)
+	{
+		SDL_Surface *enemy_surface = IMG_Load(enemy_cars[i]);
+		if (enemy_surface)
+		{
+			enemy_textures[i] = SDL_CreateTextureFromSurface(renderer, enemy_surface);
+			if (enemy_textures[i])
+			{
+				printf("加载敌方车辆 %d: %s\n", i + 1, enemy_cars[i]);
+			}
+			SDL_FreeSurface(enemy_surface);
+		}
+	}
+
+	// 初始化敌方车辆数组
+	EnemyCar enemies[MAX_ENEMIES];
+	for (int i = 0; i < MAX_ENEMIES; i++)
+	{
+		enemies[i].x = 0;
+		enemies[i].y = -CAR_HEIGHT;  // 初始位置在屏幕外
+		enemies[i].width = CAR_WIDTH;
+		enemies[i].height = CAR_HEIGHT;
+		enemies[i].speed = 3.0f + (rand() % 10) / 5.0f;  // 初始速度3.0-5.0（降低）
+		enemies[i].active = 0;  // 初始不运动
+		enemies[i].type = rand() % ENEMY_CARS_COUNT;
+		enemies[i].texture = enemy_textures[enemies[i].type];
+	}
+
+	// 敌方车辆生成计时器
+	int enemy_spawn_timer = 0;
+	int enemy_spawn_delay = 60;  // 60帧（约1秒）生成一辆
+
+	// 播放背景音乐
+	if (bgm && Mix_PlayMusic(bgm, -1) != -1)
+	{
+		printf("背景音乐开始播放\n");
+		printf("音乐控制: P=暂停/继续, N=下一首, B=上一首, M=切换地图\n");
+		Mix_VolumeMusic(128);
+	}
+
+	// 赛车的初始位置
+	int car_x = WINDOW_W / 2;
+	int car_y = WINDOW_H - CAR_HEIGHT - 20;
+	int base_car_speed = 5;  // 基础速度降低
+	int current_car_speed = base_car_speed;
+
+	// 双缓冲渲染变量
+	float scroll_position = 0.0f;      // 使用浮点数实现平滑滚动
+	int scroll_speed = current_car_speed;
+
+	// 双缓冲纹理：用于绘制完整的地图循环
+	SDL_Texture *buffer_texture = SDL_CreateTexture(
+		renderer,
+		SDL_PIXELFORMAT_RGBA8888,
+		SDL_TEXTUREACCESS_TARGET,
+		WINDOW_W,
+		WINDOW_H
+	);
+
+	if (!buffer_texture)
+	{
+		printf("双缓冲纹理创建失败\n");
+		// 继续运行，使用单缓冲
+	}
+
+	// 初始化过场动画
+	Transition map_transition;
+	init_transition(&map_transition, renderer);
+	int pending_map_change = -1;  // 待切换的地图索引，-1表示没有待切换的地图
+
+	// 分数和生命值变量
+	int score = 0;
+	int lives = LIVES;
+	int game_over = 0;
+	SDL_Texture *game_over_texture = NULL;
+
+	// 爆炸特效相关变量
+	SDL_Texture *explosion_texture = NULL;
+	float explosion_alpha = 0.0f;  // 爆炸透明度
+	int explosion_duration = 0;    // 爆炸持续时间
+	int explosion_x = 0;           // 爆炸位置x
+	int explosion_y = 0;           // 爆炸位置y
+
+	// 加载game over图片
+	const char *game_over_path = "assets/ui/game_over.png";
+	SDL_Surface *game_over_surface = IMG_Load(game_over_path);
+	if (game_over_surface)
+	{
+		game_over_texture = SDL_CreateTextureFromSurface(renderer, game_over_surface);
+		SDL_FreeSurface(game_over_surface);
+		if (game_over_texture)
+		{
+			printf("加载game over图片成功\n");
+		}
+	}
+	else
+	{
+		printf("无法加载game over图片: %s\n", IMG_GetError());
+	}
+
+	// 加载爆炸特效图片
+	const char *explosion_path = "assets/ui/explosion.png";
+	SDL_Surface *explosion_surface = IMG_Load(explosion_path);
+	if (explosion_surface)
+	{
+		explosion_texture = SDL_CreateTextureFromSurface(renderer, explosion_surface);
+		SDL_FreeSurface(explosion_surface);
+		if (explosion_texture)
+		{
+			printf("加载爆炸特效图片成功\n");
+		}
+	}
+	else
+	{
+		printf("无法加载爆炸特效图片: %s\n", IMG_GetError());
+	}
+
+
+	SDL_Event event;  // SDL 事件结构体, event 存储事件信息
+	int running = 1;  // 游戏运行标志, 1运行 0退出
+
+	// 持续按键检测
+	const Uint8 *keyState = SDL_GetKeyboardState(NULL);
+
+	float enemy_scroll_factor = 0.0f;
+
+	// 数字纹理数组（0-9）
+	SDL_Texture *number_textures[10] = { NULL };
+	const char *number_paths[] = {
+		"assets/ui/0.jpg",
+		"assets/ui/1.jpg",
+		"assets/ui/2.jpg",
+		"assets/ui/3.jpg",
+		"assets/ui/4.jpg",
+		"assets/ui/5.jpg",
+		"assets/ui/6.jpg",
+		"assets/ui/7.jpg",
+		"assets/ui/8.jpg",
+		"assets/ui/9.jpg"
+	};
+
+	// 尝试加载数字纹理（可选）
+	for (int i = 0; i < 10; i++)
+	{
+		SDL_Surface *num_surface = IMG_Load(number_paths[i]);
+		if (num_surface)
+		{
+			number_textures[i] = SDL_CreateTextureFromSurface(renderer, num_surface);
+			SDL_FreeSurface(num_surface);
+		}
+	}
+
+	while (running)  // 事件循环
+	{
+		// 循环处理事件, 从事件队列中取出每一个事件
+		while (SDL_PollEvent(&event))
+		{
+			if (event.type == SDL_QUIT)  // 判断事件类型是否为窗口关闭事件( 点击 x )
+				running = 0;  // 退出游戏
+			else if (event.type == SDL_KEYDOWN)  // 键盘按键按下
+			{
+
+				// event.key : 按键事件的数据结构
+				// event.key.keysym : 按键的符号表示
+				// event.key.keysym.sym : SDL_Keycode 类型, 表示具体的按键代码
+				// SDL_GetKeyName() : 将 SDL_Keycode 转换为人类可读的字符串
+				// 例如：SDLK_a(97) -> "A"，SDLK_SPACE(32) -> "Space"
+				//printf("按键 : %s\n", SDL_GetKeyName(event.key.keysym.sym));
+
+				switch (event.key.keysym.sym)
+				{
+					case SDLK_p:
+						if (bgm && !game_over)
+						{
+							if (Mix_PausedMusic())
+								Mix_ResumeMusic();
+							else if (Mix_PlayingMusic())
+								Mix_PauseMusic();
+						}
+						break;
+
+					case SDLK_n:  // 切换下一首 bgm
+						if (bgm_total > 0 && bgm && !game_over)
+						{
+							// 停止当前音乐
+							Mix_HaltMusic();
+							Mix_FreeMusic(bgm);
+
+							// 计算下一首索引
+							current_bgm = (current_bgm + 1) % bgm_total;
+
+							bgm = Mix_LoadMUS(bgms[current_bgm]);
+							if (bgm && (Mix_PlayMusic(bgm, -1) == 0))
+								Mix_VolumeMusic(128);
+						}
+						break;
+
+					case SDLK_b:  //  切换上一首 bgm
+						if (bgm_total > 0 && bgm && !game_over)
+						{
+							// 停止当前音乐
+							Mix_HaltMusic();
+							Mix_FreeMusic(bgm);
+
+							// 计算下一首索引
+							current_bgm = (current_bgm - 1 + bgm_total) % bgm_total;
+
+							bgm = Mix_LoadMUS(bgms[current_bgm]);
+							if (bgm && (Mix_PlayMusic(bgm, -1) == 0))
+								Mix_VolumeMusic(128);
+						}
+						break;
+
+					case SDLK_m:  // M键：切换下一张地图
+						if (map_total > 0 && map_transition.state == TRANSITION_NONE && !game_over)
+						{
+							int next_map = (current_map + 1) % map_total;
+							pending_map_change = next_map;
+							start_transition(&map_transition);
+
+							// 在过场动画期间加载对应的过场图片
+							if (next_map < sizeof(transitions) / sizeof(transitions[0]))
+							{
+								// 释放旧的过场纹理
+								if (map_transition.transition_texture)
+								{
+									SDL_DestroyTexture(map_transition.transition_texture);
+								}
+								// 加载新的过场图片
+								map_transition.transition_texture = load_transition_texture(renderer, transitions[next_map]);
+							}
+						}
+						break;
+
+					case SDLK_c:  // C键：切换赛车皮肤
+						if (car_total > 0 && !game_over)
+						{
+							current_car = (current_car + 1) % car_total;
+							current_car_texture = car_textures[current_car];
+						}
+						break;
+
+				}
+			}
+		}
+
+		// 游戏结束时不更新游戏逻辑
+		if (game_over)
+		{
+			// 停止背景音乐
+			if (bgm && Mix_PlayingMusic())
+				Mix_HaltMusic();
+
+			// 清屏
+			SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+			SDL_RenderClear(renderer);
+
+			// 绘制game over图片
+			if (game_over_texture)
+			{
+				SDL_Rect dest = { 0, 0, WINDOW_W, WINDOW_H };
+				SDL_RenderCopy(renderer, game_over_texture, NULL, &dest);
+			}
+			else
+			{
+				// 如果没有game over图片，显示红色背景和文字
+				SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);
+				SDL_Rect fullScreen = { 0, 0, WINDOW_W, WINDOW_H };
+				SDL_RenderFillRect(renderer, &fullScreen);
+			}
+
+			// 更新屏幕
+			SDL_RenderPresent(renderer);
+
+			// 添加延迟
+			SDL_Delay(16);
+			continue;
+		}
+
+		// 更新过场动画
+		if (map_transition.state != TRANSITION_NONE)
+		{
+			int transition_finished = update_transition(&map_transition);
+
+			// 如果淡出完成且淡入开始，切换到新地图
+			if (map_transition.state == TRANSITION_FADE_IN)
+			{
+				// 在淡入状态开始时切换地图（此时alpha=1.0，完全显示过场图片）
+				if (pending_map_change != -1 && transition_finished == 0 && map_transition.timer == 1)
+				{
+					current_map = pending_map_change;
+					scroll_position = 0;
+					current_map_texture = map_textures[current_map];
+					current_map_height = map_heights[current_map];
+
+					printf("切换到地图 %d\n", current_map + 1);
+				}
+
+				// 如果淡入完成，清除待切换地图标记
+				if (transition_finished)
+				{
+					pending_map_change = -1;
+				}
+			}
+		}
+
+		// 根据当前分数计算速度倍率
+		float speed_multiplier = get_speed_multiplier(score);
+
+		// 更新当前玩家速度
+		current_car_speed = (int)(base_car_speed * speed_multiplier);
+		scroll_speed = current_car_speed;
+
+		// 处理持续按键（在过场动画期间禁用控制）
+		if (map_transition.state == TRANSITION_NONE)
+		{
+			if (keyState[SDL_SCANCODE_UP] || keyState[SDL_SCANCODE_W])
+			{
+				scroll_position -= scroll_speed;
+				enemy_scroll_factor = 0.8f;  // 当地图向上滚动时，敌方车辆需要更快
+			}
+			else if (keyState[SDL_SCANCODE_DOWN] || keyState[SDL_SCANCODE_S])
+			{
+				scroll_position += scroll_speed;
+				enemy_scroll_factor = -0.3f; // 当地图向下滚动时，敌方车辆减慢
+			}
+			else
+			{
+				enemy_scroll_factor = 0.0f;  // 没有滚动时正常速度
+			}
+
+			if (keyState[SDL_SCANCODE_LEFT] || keyState[SDL_SCANCODE_A])
+				car_x -= current_car_speed;
+
+			if (keyState[SDL_SCANCODE_RIGHT] || keyState[SDL_SCANCODE_D])
+				car_x += current_car_speed;
+
+			// 赛车边界检查
+			if (car_x < WINDOW_W / 2 - CAR_WIDTH - 30) car_x = WINDOW_W / 2 - CAR_WIDTH - 30;
+			if (car_x > WINDOW_W / 2 + CAR_WIDTH - 30) car_x = WINDOW_W / 2 + CAR_WIDTH - 30;
+
+			// 更新敌方车辆
+			enemy_spawn_timer++;
+
+			// 生成新的敌方车辆
+			if (enemy_spawn_timer >= enemy_spawn_delay)
+			{
+				enemy_spawn_timer = 0;
+
+				// 寻找可用的敌方车辆槽位
+				for (int i = 0; i < MAX_ENEMIES; i++)
+				{
+					if (!enemies[i].active)
+					{
+						// 运动敌方车辆
+						enemies[i].active = 1;
+
+						// 随机选择车道（对面车道，靠右侧）
+						int lane = rand() % 2;  // 0或1
+
+						// 敌方车辆驶来
+						if (lane == 0)
+							enemies[i].x = WINDOW_W / 2 - CAR_WIDTH - 30;  // 左侧车道
+						else
+							enemies[i].x = WINDOW_W / 2 + CAR_WIDTH / 2; // 右侧车道
+
+						// 从屏幕顶部开始
+						enemies[i].y = -CAR_HEIGHT;
+
+						// 基础速度 + 分数加成
+						float base_speed = 3.0f + (rand() % 10) / 5.0f;  // 3.0-5.0
+						enemies[i].speed = base_speed * speed_multiplier;
+
+						// 随机车辆类型
+						enemies[i].type = rand() % ENEMY_CARS_COUNT;
+						enemies[i].texture = enemy_textures[enemies[i].type];
+
+						// 随着分数增加，生成间隔减少（游戏变难）
+						int base_delay = 60;
+						int min_delay = 20;
+						int adjusted_delay = base_delay - (score / 50) * 5;
+						if (adjusted_delay < min_delay) adjusted_delay = min_delay;
+						enemy_spawn_delay = adjusted_delay + (rand() % 20);
+
+						break;
+					}
+				}
+			}
+
+			// 更新敌方车辆位置
+			for (int i = 0; i < MAX_ENEMIES; i++)
+			{
+				if (enemies[i].active)
+				{
+					// 基础速度 + 地图滚动影响
+					float effective_speed = enemies[i].speed * (1.0f + enemy_scroll_factor);
+					enemies[i].y += effective_speed;
+
+					// 如果车辆超出屏幕底部，重置并增加分数
+					if (enemies[i].y > WINDOW_H)
+					{
+						enemies[i].active = 0;
+						enemies[i].y = -CAR_HEIGHT;
+						score += 10;  // 每过一辆车加10分
+						printf("得分！当前分数: %d, 速度倍率: %.2f\n", score, speed_multiplier);
+					}
+				}
+			}
+		}
+
+		// 清屏
+		SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+		SDL_RenderClear(renderer);
+
+		// ====== 双缓冲渲染：绘制完整的地图循环 ======
+		if (current_map_texture && current_map_height > 0)
+		{
+			// 方法1：使用双缓冲纹理（推荐，最流畅）
+			if (buffer_texture)
+			{
+				// 切换到缓冲纹理进行绘制
+				SDL_SetRenderTarget(renderer, buffer_texture);
+				SDL_RenderClear(renderer);
+
+				// 计算实际滚动位置（循环）
+				float actual_scroll = fmod(scroll_position, current_map_height);
+				if (actual_scroll < 0) actual_scroll += current_map_height;
+
+				// 绘制地图第一部分
+				int src_y1 = (int)actual_scroll;
+				int dest_y1 = 0;
+				int height1 = WINDOW_H;
+
+				// 如果地图高度不够，需要绘制第二部分
+				if (src_y1 + WINDOW_H > current_map_height)
+				{
+					height1 = current_map_height - src_y1;
+
+					// 绘制第二部分（从地图顶部开始）
+					SDL_Rect src_rect2 = { 0, 0, WINDOW_W, WINDOW_H - height1 };
+					SDL_Rect dest_rect2 = { 0, height1, WINDOW_W, WINDOW_H - height1 };
+					SDL_RenderCopy(renderer, current_map_texture, &src_rect2, &dest_rect2);
+				}
+
+				// 绘制第一部分
+				SDL_Rect src_rect1 = { 0, src_y1, WINDOW_W, height1 };
+				SDL_Rect dest_rect1 = { 0, dest_y1, WINDOW_W, height1 };
+				SDL_RenderCopy(renderer, current_map_texture, &src_rect1, &dest_rect1);
+
+				// 切换回默认渲染目标
+				SDL_SetRenderTarget(renderer, NULL);
+
+				// 将缓冲纹理绘制到屏幕
+				SDL_RenderCopy(renderer, buffer_texture, NULL, NULL);
+			}
+		}
+
+		// 绘制敌方车辆（在过场动画期间也绘制）
+		for (int i = 0; i < MAX_ENEMIES; i++)
+		{
+			if (enemies[i].active)
+			{
+				SDL_Rect enemyRect = {
+					enemies[i].x,
+					(int)enemies[i].y,
+					enemies[i].width,
+					enemies[i].height
+				};
+				// 敌方车辆朝下（与玩家相反方向）
+				// SDL_RenderCopyEx(renderer, enemies[i].texture, NULL, &enemyRect, 180.0, NULL, SDL_FLIP_NONE);
+				SDL_RenderCopy(renderer, enemies[i].texture, NULL, &enemyRect);
+			}
+		}
+
+		// 绘制赛车（在过场动画期间也绘制）
+		SDL_Rect carRect = { car_x, car_y, CAR_WIDTH, CAR_HEIGHT };
+		SDL_RenderCopy(renderer, current_car_texture, NULL, &carRect);
+
+		// 简单碰撞检测（在过场动画期间禁用碰撞检测）
+		if (map_transition.state == TRANSITION_NONE)
+		{
+			SDL_Rect playerRect = { car_x, car_y, CAR_WIDTH, CAR_HEIGHT };
+
+			for (int i = 0; i < MAX_ENEMIES; i++)
+			{
+				if (enemies[i].active)
+				{
+					SDL_Rect enemyRect = {
+						enemies[i].x,
+						(int)enemies[i].y,
+						CAR_WIDTH,
+						CAR_HEIGHT
+					};
+
+					// 简单的矩形碰撞检测
+					if (playerRect.x < enemyRect.x + enemyRect.w &&
+						playerRect.x + playerRect.w > enemyRect.x &&
+						playerRect.y < enemyRect.y + enemyRect.h &&
+						playerRect.y + playerRect.h > enemyRect.y)
+					{
+						printf("碰撞！生命值-1\n");
+
+						// 触发爆炸特效
+						explosion_x = car_x + CAR_WIDTH / 2 - 40;  // 居中显示
+						explosion_y = car_y + CAR_HEIGHT / 2 - 40; // 居中显示
+						explosion_alpha = 1.0f;  // 完全不透明开始
+						explosion_duration = 30; // 持续30帧（约0.5秒）
+
+						// 减少生命值
+						lives--;
+
+						// 重置碰撞的敌方车辆
+						enemies[i].active = 0;
+						enemies[i].y = -CAR_HEIGHT;
+
+						// 如果生命值为0，游戏结束
+						if (lives <= 0)
+						{
+							game_over = 1;
+							printf("游戏结束！最终分数: %d\n", score);
+						}
+						else
+						{
+							printf("剩余生命值: %d\n", lives);
+						}
+					}
+				}
+			}
+		}
+
+		// 更新爆炸特效
+		if (explosion_duration > 0)
+		{
+			explosion_duration--;
+			// 爆炸效果逐渐消失
+			explosion_alpha = explosion_duration / 30.0f;
+
+			// 添加轻微的位置变化模拟震动效果
+			explosion_x += rand() % 5 - 2;  // -2到+2的随机偏移
+			explosion_y += rand() % 5 - 2;
+		}
+
+		// 绘制爆炸特效（如果有）
+		if (explosion_duration > 0 && explosion_texture)
+		{
+			// 设置爆炸纹理的透明度
+			SDL_SetTextureAlphaMod(explosion_texture, (Uint8)(explosion_alpha * 255));
+
+			// 绘制爆炸效果（80x80像素）
+			SDL_Rect explosionRect = {
+				explosion_x,
+				explosion_y,
+				80,
+				80
+			};
+			SDL_RenderCopy(renderer, explosion_texture, NULL, &explosionRect);
+
+			// 重置纹理透明度
+			SDL_SetTextureAlphaMod(explosion_texture, 255);
+		}
+
+
+		// 渲染分数（左上角）- 使用简单图形表示
+		// 绘制分数背景框
+		SDL_SetRenderDrawColor(renderer, 0, 0, 0, 180);
+		SDL_Rect score_bg = { 10, 10, 120, 50 };
+		SDL_RenderFillRect(renderer, &score_bg);
+
+		// 绘制分数边框
+		SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+		SDL_RenderDrawRect(renderer, &score_bg);
+
+		// 显示分数文本（简单实现）
+		// 如果没有数字纹理，使用矩形表示
+		char score_str[20];
+		sprintf(score_str, "%d", score);
+
+		// 显示分数
+		int score_x = 20;
+		int score_y = 20;
+
+		// 尝试使用数字纹理
+		int has_numbers = 0;
+		for (int i = 0; i < 10; i++)
+		{
+			if (number_textures[i])
+			{
+				has_numbers = 1;
+				break;
+			}
+		}
+
+		if (has_numbers)
+		{
+			// 使用数字纹理显示分数
+			for (int i = 0; score_str[i]; i++)
+			{
+				int digit = score_str[i] - '0';
+				if (digit >= 0 && digit <= 9 && number_textures[digit])
+				{
+					SDL_Rect digit_rect = { score_x, score_y, 20, 30 };
+					SDL_RenderCopy(renderer, number_textures[digit], NULL, &digit_rect);
+					score_x += 22;
+				}
+			}
+		}
+		else
+		{
+			// 简单显示分数数字
+			SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+			for (int i = 0; score_str[i]; i++)
+			{
+				// 简单绘制数字（每个数字占20x30像素）
+				SDL_Rect digit_rect = { score_x, score_y, 20, 30 };
+				SDL_RenderDrawRect(renderer, &digit_rect);
+				score_x += 22;
+			}
+		}
+
+		// 绘制生命值（使用红色方块表示）
+		int life_x = WINDOW_W - 150;
+		int life_y = 15;
+		SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);
+
+		for (int i = 0; i < lives; i++)
+		{
+			SDL_Rect life_rect = { life_x, life_y, 30, 30 };
+			SDL_RenderFillRect(renderer, &life_rect);
+			life_x += 35;
+		}
+
+		// 渲染速度倍率显示（右上角）
+		char speed_str[30];
+		sprintf(speed_str, "x%.1f", speed_multiplier);
+		int speed_x = WINDOW_W - 80;
+		int speed_y = 60;
+
+		SDL_SetRenderDrawColor(renderer, 0, 0, 0, 180);
+		SDL_Rect speed_bg = { speed_x - 10, speed_y - 5, 70, 25 };
+		SDL_RenderFillRect(renderer, &speed_bg);
+
+		SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+		SDL_RenderDrawRect(renderer, &speed_bg);
+
+		// 简单显示速度倍率
+		for (int i = 0; speed_str[i]; i++)
+		{
+			SDL_Rect char_rect = { speed_x, speed_y, 12, 20 };
+			SDL_RenderDrawRect(renderer, &char_rect);
+			speed_x += 14;
+		}
+
+		// 渲染过场动画（最后渲染，覆盖在一切之上）
+		render_transition(renderer, &map_transition);
+
+		// 更新屏幕
+		SDL_RenderPresent(renderer);
+
+		// 添加延迟，减少 CPU 占用
+		// 让程序暂停 10 毫秒
+		// 减少 CPU 占用率 (否则 while 循环会全速运行，占用大量 CPU)
+		SDL_Delay(16);  // 约60FPS
+	}
+
+	printf("game over!\n");
+
+	if (buffer_texture)
+		SDL_DestroyTexture(buffer_texture);
+
+	// 清理过场纹理
+	if (map_transition.transition_texture)
+		SDL_DestroyTexture(map_transition.transition_texture);
+
+	// 清理爆炸纹理
+	if (explosion_texture)
+		SDL_DestroyTexture(explosion_texture);
+
+	// 清理game over纹理
+	if (game_over_texture)
+		SDL_DestroyTexture(game_over_texture);
+
+	// 清理数字纹理
+	for (int i = 0; i < 10; i++)
+	{
+		if (number_textures[i])
+			SDL_DestroyTexture(number_textures[i]);
+	}
+
+	for (int i = 0; i < map_total; i++)
+		if (map_textures[i])
+			SDL_DestroyTexture(map_textures[i]);
+
+	for (int i = 0; i < car_total; i++)
+		if (car_textures[i])
+			SDL_DestroyTexture(car_textures[i]);
+
+	// 清理敌方车辆纹理
+	for (int i = 0; i < ENEMY_CARS_COUNT; i++)
+		if (enemy_textures[i] && enemy_textures[i] != car_textures[i % car_total])
+			SDL_DestroyTexture(enemy_textures[i]);
+
+	if (bgm) Mix_FreeMusic(bgm);
+	if (renderer) SDL_DestroyRenderer(renderer);
+	if (window) SDL_DestroyWindow(window);
+
+	Mix_CloseAudio();
+	IMG_Quit();
+	SDL_Quit();
+
+
+	return 0;
+}

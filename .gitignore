@@ -1,0 +1,8 @@
+f1_racing_car/.vs
+f1_racing_car/f1_racing_car.slnx
+
+f1_racing_car/f1_racing_car/*
+!f1_racing_car/f1_racing_car/*.c
+!f1_racing_car/f1_racing_car/*.h
+!f1_racing_car/f1_racing_car/makefile
+!f1_racing_car/f1_racing_car/assets
