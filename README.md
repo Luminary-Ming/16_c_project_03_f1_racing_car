@@ -12,3 +12,11 @@
 - 模块化代码设计：分离主页模块（`home.c`）与游戏核心模块（`game.c`），使用全局状态枚举（运行/暂停/结束）管理游戏流程，支持 ESC 返回主页、R 键重新开始等功能。
 
 <img width="1827" height="1046" alt="image" src="https://github.com/user-attachments/assets/5c76132e-b9ea-474a-8057-84037df1ed52" />
+<img width="1827" height="1046" alt="F1 赛车截图 2" src="https://github.com/user-attachments/assets/92e8078b-8ba5-4a2e-a9e5-4c8676778b18" />
+<img width="1827" height="1046" alt="F1 赛车截图 3" src="https://github.com/user-attachments/assets/0468eb3e-0054-466d-babf-a802130e115d" />
+<img width="1827" height="1046" alt="F1 赛车截图 4 png" src="https://github.com/user-attachments/assets/905e3862-0237-4629-a211-e59e9217afac" />
+<img width="1252" height="250" alt="bgm" src="https://github.com/user-attachments/assets/f0536f68-8043-4daf-be95-20198aab21af" />
+<img width="1399" height="375" alt="car" src="https://github.com/user-attachments/assets/a1661844-7d16-4c73-94cc-92a85e6cac44" />
+<img width="1424" height="227" alt="map" src="https://github.com/user-attachments/assets/4864ef3c-147d-4453-a94a-724c09cf2a4e" />
+<img width="1020" height="196" alt="home" src="https://github.com/user-attachments/assets/bb573347-d340-4aed-af4f-d883ca3e05cf" />
+<img width="1399" height="353" alt="ui" src="https://github.com/user-attachments/assets/13c089ab-6fc5-4513-8ea4-4acf83668541" />
