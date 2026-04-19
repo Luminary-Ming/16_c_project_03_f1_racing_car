@@ -10,3 +10,5 @@
 - 搭建游戏 UI 系统：使用数字纹理图片显示分数，动态绘制生命值方块，利用 TTF 字体库渲染速度倍率文字（随得分提升至 3 倍速），提升信息可读性。
 - 优化渲染性能：采用双缓冲纹理（`SDL_TEXTUREACCESS_TARGET`）减少画面撕裂；通过 `SDL_RENDERER_PRESENTVSYNC` 同步帧率，保证 60 FPS 稳定运行。
 - 模块化代码设计：分离主页模块（`home.c`）与游戏核心模块（`game.c`），使用全局状态枚举（运行/暂停/结束）管理游戏流程，支持 ESC 返回主页、R 键重新开始等功能。
+
+<img width="1827" height="1046" alt="image" src="https://github.com/user-attachments/assets/5c76132e-b9ea-474a-8057-84037df1ed52" />
